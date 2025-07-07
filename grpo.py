@@ -79,7 +79,7 @@ def get_kl_divergence(curr_log_prob, ref_log_prob):
     return kl_div
     
 
-def grpo(curr_model, old_model, ref_model, seq_ids, output_masks, rewards, ep=0.2, beta=0.1):
+def grpo_loss(curr_model, old_model, ref_model, seq_ids, output_masks, rewards, ep=0.2, beta=0.1):
     """
     GRPO loss function
 

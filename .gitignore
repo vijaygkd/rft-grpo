@@ -1,0 +1,11 @@
+# ignore cpython
+__pycache__/
+
+# ignore vscode
+.vscode/
+
+# ignore pycache
+*.pyc
+
+# ignore logs
+logs/
