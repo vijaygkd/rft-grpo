@@ -5,6 +5,8 @@ Wordle dataset and reward function
 import torch
 
 
+### DATASET ###
+
 def get_wordle_dataset(tokenizer, split="train"):
     """
     Load wordle dataset from path
@@ -98,8 +100,21 @@ def messages_to_model_format(messages, tokenizer, add_generation_prompt=True):
         return None
 
 
+### REWARDS ###
 
-def reward_wordle(y_true: str, y_pred: str) -> float:
+def get_wordle_rewards(batch_output_texts: list[str], secret: str):
+    """
+    Get rewards for batch of output texts
+    """
+    rewards = []
+    for y_pred in batch_output_texts:
+        guess = extract_guess_from_text(y_pred)
+        rewards.append(reward_wordle_fn(secret, guess))
+    assert len(rewards) == len(batch_output_texts), "Batch sizes must match"
+    return rewards
+
+
+def reward_wordle_fn(y_true: str, y_pred: str) -> float:
     """
     Reward function to calculate reward for wordle guess.
     Heuristic:
@@ -134,15 +149,15 @@ def reward_wordle(y_true: str, y_pred: str) -> float:
     return reward
 
 
-def extract_guess_from_text(text):
+def extract_guess_from_text(text) -> str:
     """
     Extracts the guess from between <guess> and </guess> tags in the input text.
     There should be only one pair of <guess>...</guess> tags.
     Returns the guess as a string, stripped of whitespace.
-    Raises ValueError if the tags are missing or if there are multiple pairs.
+    Returns empty string if the tags are missing or if there are multiple pairs.
     """
     import re
     matches = re.findall(r'<guess>(.*?)</guess>', text, re.DOTALL)
     if len(matches) != 1:
-        raise ValueError(f"Expected exactly one <guess>...</guess> tag, found {len(matches)}.")
+        return ""
     return matches[0].strip()
