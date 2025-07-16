@@ -48,7 +48,7 @@ def get_model_log_prob(model, seq_ids, output_masks):
     return output_log_prob
 
 
-def get_group_relative_reward_advantage(rewards: torch.Tensor) -> torch.Tensor:
+def get_group_relative_reward_advantage(rewards: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     """
     Calculate reward advantage of sequence with "Group Relevative" reward function.
     
@@ -60,7 +60,7 @@ def get_group_relative_reward_advantage(rewards: torch.Tensor) -> torch.Tensor:
     """
     mean_reward = rewards.mean()
     std_reward = rewards.std()
-    advantages = (rewards - mean_reward) / std_reward
+    advantages = (rewards - mean_reward) / (std_reward + eps)
     return advantages
 
 
@@ -79,7 +79,7 @@ def get_kl_divergence(curr_log_prob, ref_log_prob):
     return kl_div
     
 
-def grpo_loss(curr_model, old_model, ref_model, seq_ids, output_masks, rewards, ep=0.2, beta=0.1):
+def grpo_loss_fn(curr_model, old_model, ref_model, seq_ids, output_masks, rewards, ep=0.2, beta=0.1):
     """
     GRPO loss function
 
@@ -96,11 +96,14 @@ def grpo_loss(curr_model, old_model, ref_model, seq_ids, output_masks, rewards, 
     Returns:
         Tensor of shape (1,) containing GRPO loss for the batch
     """
-    curr_log_prob = get_model_log_prob(curr_model, seq_ids, output_masks)   # (B,) 
     with torch.no_grad():
         # no grad for old and ref models
         old_log_prob = get_model_log_prob(old_model, seq_ids, output_masks)
         ref_log_prob = get_model_log_prob(ref_model, seq_ids, output_masks)
+
+    # with grad for curr model -- for backprop
+    curr_log_prob = get_model_log_prob(curr_model, seq_ids, output_masks)   # (B,) 
+
     # policy objective
     adv = get_group_relative_reward_advantage(rewards)                     
     ratio = torch.exp(curr_log_prob - old_log_prob)                        

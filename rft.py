@@ -6,7 +6,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from datasets import load_dataset
 
-from grpo import get_model_log_prob, grpo_loss
+from grpo import grpo_loss_fn
 from wordle import get_wordle_dataset, get_wordle_rewards
 
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
@@ -27,7 +27,13 @@ def train_rft():
     ref_model.to(device)
     print("Ref model info:")
     print_model_info(ref_model)
+    prev_model = copy.deepcopy(model)
+    prev_model.eval()
+    prev_model.requires_grad_(False)
+    prev_model.to(device)
 
+
+    # 2. Load LoRA model
     model = load_lora_model(model)
     model.to(device)
     print("LoRA model info:")
@@ -36,11 +42,13 @@ def train_rft():
     # 2. Load dataset - Wordle
     # TODO - dataloader to shuffle and batch
     dataset = get_wordle_dataset(tokenizer)
+    dataset = dataset.select(range(10))
     print(f"Loaded {len(dataset)} examples")
+    
 
     # 3. Training Parameters
     num_epochs = 10
-    num_generations = 2    # number of generations per sample
+    num_generations = 4    # number of generations per sample
     # only one sample at a time for now
     num_samples = 1        # number of input samples: batch size = num_samples * num_generations
     max_seq_len = 128      # max sequence length
@@ -71,9 +79,44 @@ def train_rft():
             batch_rewards = torch.tensor(batch_rewards, device=device)
             print(f"Batch rewards: {batch_rewards}")
             
-            
-            # TODO train
-            return
+            # 3. GRPO - Calculate GRPO loss
+            grpo_loss = grpo_loss_fn(
+                curr_model=model, 
+                old_model=prev_model, 
+                ref_model=ref_model, 
+                seq_ids=batch_input_ids, 
+                output_masks=batch_output_masks, 
+                rewards=batch_rewards
+            )
+            print(f"GRPO loss: {grpo_loss}")
+            # gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            # 4. BACKPROP - Update model
+            # update prev model before backprop for next iteration
+            prev_model = copy.deepcopy(model)
+            prev_model.requires_grad_(False)
+            # update curr model
+            optimizer.zero_grad()
+            grpo_loss.backward()
+            optimizer.step()                # TODO : add gradient accumulation
+
+
+            print("."*30)
+
+
+
+            # TODO:
+            # - add logs - print loss, reward, plot graph
+            # - add evaluation on val set
+            # - add checkpointing
+            # - add early stopping
+            # - add learning rate scheduler
+            # - add mixed precision training
+            # - add gradient accumulation
+ 
+
+    return
 
 
 
