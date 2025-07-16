@@ -1,9 +1,9 @@
 """
 RFT - Reinforcement Fine-Tuning main file
 """
-import copy
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model
 from datasets import load_dataset
 
 from grpo import grpo_loss_fn
@@ -20,24 +20,21 @@ def train_rft():
     # 1. Load model - Gemma-3-1b-it
     model_name = "google/gemma-3-1b-it"
     print(f"Loading model: {model_name}")
-    model, tokenizer = load_base_model(model_name)
-    ref_model = copy.deepcopy(model)
+    ref_model, tokenizer = load_base_model(model_name)
     ref_model.eval()
-    ref_model.requires_grad_(False)
     ref_model.to(device)
     print("Ref model info:")
     print_model_info(ref_model)
-    prev_model = copy.deepcopy(model)
-    prev_model.eval()
-    prev_model.requires_grad_(False)
-    prev_model.to(device)
 
-
-    # 2. Load LoRA model
-    model = load_lora_model(model)
+    model = load_lora_model(ref_model)
     model.to(device)
     print("LoRA model info:")
     print_model_info(model)
+
+    prev_model = copy_peft_model(model)
+    prev_model.eval()
+    print("Prev model info:")
+    print_model_info(prev_model)
 
     # 2. Load dataset - Wordle
     # TODO - dataloader to shuffle and batch
@@ -54,7 +51,9 @@ def train_rft():
     max_seq_len = 128      # max sequence length
 
     # 4. Training loop
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    # learning rate scheduler
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-6)
+    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
 
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}")
@@ -69,10 +68,11 @@ def train_rft():
                 num_generations=num_generations, 
                 max_seq_len=max_seq_len
             )
-
-            print(f"Batch output texts: {batch_output_texts}")
-            print(f"secret: {samples['secret'][0]}")
-
+            
+            print(f"SECRET: {samples['secret'][0]}")
+            for i, text in enumerate(batch_output_texts):
+                print(f"Generation {i}: {text}")
+            
             # 2. REWARD - Calculate rewards
             secret_word = samples['secret'][0]
             batch_rewards = get_wordle_rewards(batch_output_texts, secret_word)
@@ -91,16 +91,17 @@ def train_rft():
             print(f"GRPO loss: {grpo_loss}")
             # gradient clipping
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            print(f"Loss after gradient clipping: {grpo_loss}")
 
             # 4. BACKPROP - Update model
             # update prev model before backprop for next iteration
-            prev_model = copy.deepcopy(model)
-            prev_model.requires_grad_(False)
+            prev_model = copy_peft_model(model)
+            prev_model.eval()
             # update curr model
             optimizer.zero_grad()
             grpo_loss.backward()
             optimizer.step()                # TODO : add gradient accumulation
-
+            # lr_scheduler.step()
 
             print("."*30)
 
@@ -117,6 +118,26 @@ def train_rft():
  
 
     return
+
+
+def copy_peft_model(peft_model):
+    """
+    Copy PEFT model
+    """
+    # Get the base model and PEFT config
+    base_model = peft_model.get_base_model()
+    peft_config = peft_model.peft_config[list(peft_model.peft_config.keys())[0]]  # Get first adapter
+    
+    # Create new base peft model
+    new_base_model = base_model.__class__(base_model.config)
+    new_base_model.load_state_dict(base_model.state_dict())
+    new_peft_model = get_peft_model(new_base_model, peft_config)
+    
+    # Copy weights
+    new_peft_model.load_state_dict(peft_model.state_dict())
+    new_peft_model.to(peft_model.device)
+    
+    return new_peft_model
 
 
 
@@ -197,8 +218,6 @@ def load_base_model(model_name):
 
 
 def load_lora_model(model):
-    from peft import LoraConfig, get_peft_model
-
     lora_config = LoraConfig(
         r=8,    # rank of LoRA matrix
         lora_alpha=32,
