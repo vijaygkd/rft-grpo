@@ -6,7 +6,7 @@ Reference: Deep-Seek-R1 paper
 import torch
 
 
-def get_model_log_prob(model, seq_ids, output_masks):
+def get_model_log_prob(model, seq_ids, output_masks, pad_token_id=None):
     """
     Calculate model sequence log probability of OUTPUT given INPUT: P(output | input)
     
@@ -14,7 +14,7 @@ def get_model_log_prob(model, seq_ids, output_masks):
         model: Model to use for inference
         seq_ids: Tensor of shape (B, seq_len) containing token ids of generated sequence belonging to same input
         output_masks: Tensor of shape (B, seq_len) containing mask for ouptput positions. (input and padding positions in seq_ids are set to 0)
-    
+        pad_token_id: Token id for padding token. If None, will use no attention mask.
     Returns:
         Tensor of shape (B,) containing log probabilities for each outputsequence in batch
         
@@ -27,7 +27,11 @@ def get_model_log_prob(model, seq_ids, output_masks):
     # output: n p u t o u t p u t -     (get logit for output tokens, ie. model probablity)
     # masks:  0 0 0 0 1 1 1 1 1 1 0     (left shift by 1 to get logits for output tokens)
     
-    attention_mask = torch.ones(1, seq_ids.shape[-1])
+    assert seq_ids.shape == output_masks.shape, "seq_ids and output_masks must have same shape"
+    attention_mask = None
+    if pad_token_id:
+        attention_mask = torch.where(seq_ids == pad_token_id, 0, 1).type(torch.int64)
+    
     # forward pass
     output = model(
         input_ids=seq_ids,
@@ -41,9 +45,9 @@ def get_model_log_prob(model, seq_ids, output_masks):
         dim=-1
     )                                                               # (B, seq_len, 1)  -> log_prob for seq tokens
     token_log_prob = token_log_prob.squeeze()                                   # (B, seq_len)
-    masks = torch.roll(output_masks, shifts=-1, dims=-1)            # left shift by 1
-    masks[:, -1] = 0                                                # pad last token with 0 as it is not output token
-    output_token_log_prob = token_log_prob * masks                  # (B, seq_len)  -> log_prob for output tokens     
+    loss_mask = torch.roll(output_masks, shifts=-1, dims=-1)            # left shift by 1
+    loss_mask[:, -1] = 0                                                # pad last token with 0 as it is not output token
+    output_token_log_prob = token_log_prob * loss_mask                  # (B, seq_len)  -> log_prob for output tokens     
     output_log_prob = output_token_log_prob.sum(dim=-1)             # (B, 1)  -> sum of log_prob for output tokens
     return output_log_prob
 
@@ -79,7 +83,7 @@ def get_kl_divergence(curr_log_prob, ref_log_prob):
     return kl_div
     
 
-def grpo_loss_fn(curr_model, old_model, ref_model, seq_ids, output_masks, rewards, ep=0.2, beta=0.1):
+def grpo_loss_fn(curr_model, old_model, ref_model, seq_ids, output_masks, rewards, pad_token_id=None, ep=0.2, beta=0.1):
     """
     GRPO loss function
 
@@ -98,11 +102,11 @@ def grpo_loss_fn(curr_model, old_model, ref_model, seq_ids, output_masks, reward
     """
     with torch.no_grad():
         # no grad for old and ref models
-        old_log_prob = get_model_log_prob(old_model, seq_ids, output_masks)
-        ref_log_prob = get_model_log_prob(ref_model, seq_ids, output_masks)
-
+        ref_log_prob = get_model_log_prob(ref_model, seq_ids, output_masks, pad_token_id)
+        old_log_prob = get_model_log_prob(old_model, seq_ids, output_masks, pad_token_id)
     # with grad for curr model -- for backprop
-    curr_log_prob = get_model_log_prob(curr_model, seq_ids, output_masks)   # (B,)
+    curr_log_prob = get_model_log_prob(curr_model, seq_ids, output_masks, pad_token_id)   # (B,)
+
     print(f"curr_log_prob: {curr_log_prob}")
     print(f"curr_prob: {torch.exp(curr_log_prob)}")
     print(f"old_log_prob: {old_log_prob}")

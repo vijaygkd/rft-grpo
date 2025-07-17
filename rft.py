@@ -40,7 +40,7 @@ def train_rft():
     # 2. Load dataset - Wordle
     # TODO - dataloader to shuffle and batch
     dataset = get_wordle_dataset(tokenizer)
-    dataset = dataset.select([3])
+    # dataset = dataset.select(range(10))
     print(f"Dataset loaded with {len(dataset)} examples")
 
     # 3. Training Parameters
@@ -86,7 +86,8 @@ def train_rft():
                 ref_model=ref_model, 
                 seq_ids=batch_input_ids, 
                 output_masks=batch_output_masks, 
-                rewards=batch_rewards
+                rewards=batch_rewards,
+                pad_token_id=tokenizer.pad_token_id
             )
             print(f"GRPO loss: {grpo_loss}")
             # gradient clipping
