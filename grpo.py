@@ -102,17 +102,26 @@ def grpo_loss_fn(curr_model, old_model, ref_model, seq_ids, output_masks, reward
         ref_log_prob = get_model_log_prob(ref_model, seq_ids, output_masks)
 
     # with grad for curr model -- for backprop
-    curr_log_prob = get_model_log_prob(curr_model, seq_ids, output_masks)   # (B,) 
+    curr_log_prob = get_model_log_prob(curr_model, seq_ids, output_masks)   # (B,)
+    print(f"curr_log_prob: {curr_log_prob}")
+    print(f"curr_prob: {torch.exp(curr_log_prob)}")
+    print(f"old_log_prob: {old_log_prob}")
+    print(f"old_prob: {torch.exp(old_log_prob)}")
+    print(f"ref_log_prob: {ref_log_prob}")
+    print(f"ref_prob: {torch.exp(ref_log_prob)}")
 
     # policy objective
     adv = get_group_relative_reward_advantage(rewards)                     
-    ratio = torch.exp(curr_log_prob - old_log_prob)                        
+    ratio = torch.exp(curr_log_prob - old_log_prob)
+    print(f"ratio: {ratio}")
     unclipped = ratio * adv                                                
     clipped = torch.clamp(ratio, 1 - ep, 1 + ep) * adv                     
     policy_obj = torch.min(unclipped, clipped)                             
     # kl divergence
-    kl_div = get_kl_divergence(curr_log_prob, ref_log_prob)                
+    kl_div = get_kl_divergence(curr_log_prob, ref_log_prob)           
+    print(f"kl_div: {kl_div}")
     # grpo loss
     grpo_loss = policy_obj - (beta * kl_div)                                # (B,)
+    print(f"grpo_loss for batch: {grpo_loss}")
     grpo_loss = - grpo_loss.mean()                                          # (1,)
     return grpo_loss

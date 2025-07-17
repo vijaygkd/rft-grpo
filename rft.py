@@ -21,27 +21,27 @@ def train_rft():
     model_name = "google/gemma-3-1b-it"
     print(f"Loading model: {model_name}")
     ref_model, tokenizer = load_base_model(model_name)
-    ref_model.eval()
+    ref_model.requires_grad_(False)
     ref_model.to(device)
     print("Ref model info:")
     print_model_info(ref_model)
 
-    model = load_lora_model(ref_model)
+    model, _ = load_base_model(model_name)
+    model = load_lora_model(model)
     model.to(device)
     print("LoRA model info:")
     print_model_info(model)
 
     prev_model = copy_peft_model(model)
-    prev_model.eval()
+    prev_model.requires_grad_(False)
     print("Prev model info:")
     print_model_info(prev_model)
 
     # 2. Load dataset - Wordle
     # TODO - dataloader to shuffle and batch
     dataset = get_wordle_dataset(tokenizer)
-    dataset = dataset.select(range(10))
-    print(f"Loaded {len(dataset)} examples")
-    
+    dataset = dataset.select([3])
+    print(f"Dataset loaded with {len(dataset)} examples")
 
     # 3. Training Parameters
     num_epochs = 10
@@ -96,7 +96,7 @@ def train_rft():
             # 4. BACKPROP - Update model
             # update prev model before backprop for next iteration
             prev_model = copy_peft_model(model)
-            prev_model.eval()
+            prev_model.requires_grad_(False)
             # update curr model
             optimizer.zero_grad()
             grpo_loss.backward()
@@ -130,7 +130,7 @@ def copy_peft_model(peft_model):
     
     # Create new base peft model
     new_base_model = base_model.__class__(base_model.config)
-    new_base_model.load_state_dict(base_model.state_dict())
+    # new_base_model.load_state_dict(base_model.state_dict())
     new_peft_model = get_peft_model(new_base_model, peft_config)
     
     # Copy weights
