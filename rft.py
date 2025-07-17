@@ -64,7 +64,7 @@ def train_rft():
 
         # shuffle
         dataset = dataset.shuffle(seed=epoch)
-        dataset = dataset.select(range(1))
+        dataset = dataset.select(range(5))
 
         for samples in dataset.iter(batch_size=num_samples):
             # 1. ACTION - Sample generations from current policy model
