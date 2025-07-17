@@ -107,13 +107,6 @@ def grpo_loss_fn(curr_model, old_model, ref_model, seq_ids, output_masks, reward
     # with grad for curr model -- for backprop
     curr_log_prob = get_model_log_prob(curr_model, seq_ids, output_masks, pad_token_id)   # (B,)
 
-    print(f"curr_log_prob: {curr_log_prob}")
-    print(f"curr_prob: {torch.exp(curr_log_prob)}")
-    print(f"old_log_prob: {old_log_prob}")
-    print(f"old_prob: {torch.exp(old_log_prob)}")
-    print(f"ref_log_prob: {ref_log_prob}")
-    print(f"ref_prob: {torch.exp(ref_log_prob)}")
-
     # policy objective
     adv = get_group_relative_reward_advantage(rewards)                     
     ratio = torch.exp(curr_log_prob - old_log_prob)

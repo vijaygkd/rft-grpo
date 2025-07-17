@@ -55,7 +55,7 @@ def train_rft():
 
     # 4. Training loop
     # learning rate scheduler
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-6)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
 
     for epoch in range(num_epochs):
