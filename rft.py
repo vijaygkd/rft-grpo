@@ -3,7 +3,7 @@ RFT - Reinforcement Fine-Tuning main file
 """
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model
+from peft import LoraConfig, get_peft_model, PeftModel
 from datasets import load_dataset
 
 from grpo import grpo_loss_fn
@@ -21,7 +21,7 @@ def train_rft():
     model_name = "google/gemma-3-1b-it"
     print(f"Loading model: {model_name}")
     ref_model, tokenizer = load_base_model(model_name)
-    ref_model.requires_grad_(False)
+    ref_model.requires_grad_(False)    # no train
     ref_model.to(device)
     print("Ref model info:")
     print_model_info(ref_model)
@@ -32,19 +32,22 @@ def train_rft():
     print("LoRA model info:")
     print_model_info(model)
 
-    prev_model = copy_peft_model(model)
-    prev_model.requires_grad_(False)
+    prev_model, _ = load_base_model(model_name)
+    prev_model = load_lora_model(prev_model)
+    # copy weights from model to prev_model
+    prev_model = copy_peft_model_weights(model, prev_model)
+    assert_model_same(model, prev_model)
+    prev_model.requires_grad_(False)    # no train
+    prev_model.to(device)
     print("Prev model info:")
     print_model_info(prev_model)
 
     # 2. Load dataset - Wordle
-    # TODO - dataloader to shuffle and batch
     dataset = get_wordle_dataset(tokenizer)
-    # dataset = dataset.select(range(10))
     print(f"Dataset loaded with {len(dataset)} examples")
 
     # 3. Training Parameters
-    num_epochs = 10
+    num_epochs = 1
     num_generations = 4    # number of generations per sample
     # only one sample at a time for now
     num_samples = 1        # number of input samples: batch size = num_samples * num_generations
@@ -59,10 +62,14 @@ def train_rft():
         print(f"Epoch {epoch+1}/{num_epochs}")
         print("-"*100)
 
+        # shuffle
+        dataset = dataset.shuffle(seed=epoch)
+        dataset = dataset.select(range(1))
+
         for samples in dataset.iter(batch_size=num_samples):
-            # 1. ACTION - Sample generations from model
+            # 1. ACTION - Sample generations from current policy model
             batch_input_ids, batch_output_masks, batch_output_texts = generate_batch(
-                model=model, 
+                model=model,    # TODO: deepseek paper user old policy model for sampling. why?
                 tokenizer=tokenizer, 
                 sample_inputs=samples['input'], 
                 num_generations=num_generations, 
@@ -96,8 +103,8 @@ def train_rft():
 
             # 4. BACKPROP - Update model
             # update prev model before backprop for next iteration
-            prev_model = copy_peft_model(model)
-            prev_model.requires_grad_(False)
+            prev_model = copy_peft_model_weights(model, prev_model)
+            assert_model_same(model, prev_model)
             # update curr model
             optimizer.zero_grad()
             grpo_loss.backward()
@@ -105,8 +112,6 @@ def train_rft():
             # lr_scheduler.step()
 
             print("."*30)
-
-
 
             # TODO:
             # - add logs - print loss, reward, plot graph
@@ -121,25 +126,23 @@ def train_rft():
     return
 
 
-def copy_peft_model(peft_model):
+def copy_peft_model_weights(source_peft_model: PeftModel, target_peft_model: PeftModel) -> PeftModel:
     """
-    Copy PEFT model
+    Copy source PEFT model weights to target PEFT model
     """
-    # Get the base model and PEFT config
-    base_model = peft_model.get_base_model()
-    peft_config = peft_model.peft_config[list(peft_model.peft_config.keys())[0]]  # Get first adapter
-    
-    # Create new base peft model
-    new_base_model = base_model.__class__(base_model.config)
-    # new_base_model.load_state_dict(base_model.state_dict())
-    new_peft_model = get_peft_model(new_base_model, peft_config)
-    
-    # Copy weights
-    new_peft_model.load_state_dict(peft_model.state_dict())
-    new_peft_model.to(peft_model.device)
-    
-    return new_peft_model
+    for (name1, param1), (name2, param2) in zip(source_peft_model.named_parameters(), target_peft_model.named_parameters()):
+        assert name1 == name2, "Model parameters are not the same"
+        param2.data.copy_(param1.data)
+    return target_peft_model
 
+
+
+def assert_model_same(model1, model2):
+    for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
+        assert name1 == name2, f"Model parameters are not the same: {name1} != {name2}"
+        assert param1.dtype == param2.dtype, f"Model parameters are not the same for {name1}: {param1.dtype} != {param2.dtype}"
+        assert torch.allclose(param1.data, param2.data), f"Model parameters are not the same for {name1}: {param1.data} != {param2.data}"
+    print("Model parameters are the same")
 
 
 def generate_batch(model, tokenizer, sample_inputs, num_generations, max_seq_len):
@@ -209,16 +212,19 @@ def print_model_info(model):
 
 
 
-def load_base_model(model_name):
+def load_base_model(model_name) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """
-    Load base model
+    Load base model and tokenizer
     """
     model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
 
 
-def load_lora_model(model):
+def load_lora_model(model: AutoModelForCausalLM) -> PeftModel:
+    """
+    Initialize LoRA model from base model
+    """
     lora_config = LoraConfig(
         r=8,    # rank of LoRA matrix
         lora_alpha=32,
@@ -230,7 +236,6 @@ def load_lora_model(model):
     )
     # Load LoRA weights
     model = get_peft_model(model, lora_config)
-
     return model
 
 
