@@ -51,7 +51,7 @@ def train_rft():
     num_generations = 4    # number of generations per sample
     # only one sample at a time for now
     num_samples = 1        # number of input samples: batch size = num_samples * num_generations
-    max_seq_len = 128      # max sequence length
+    max_seq_len = 512      # max sequence length
 
     # 4. Training loop
     # learning rate scheduler
@@ -98,8 +98,9 @@ def train_rft():
             )
             print(f"GRPO loss: {grpo_loss}")
             # gradient clipping
+            print(f"Model grad norm before clipping: {model_grad_norm(model)}")
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            print(f"Loss after gradient clipping: {grpo_loss}")
+            print(f"Model grad norm after clipping: {model_grad_norm(model)}")
 
             # 4. BACKPROP - Update model
             # update prev model before backprop for next iteration
@@ -136,13 +137,23 @@ def copy_peft_model_weights(source_peft_model: PeftModel, target_peft_model: Pef
     return target_peft_model
 
 
-
 def assert_model_same(model1, model2):
     for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
         assert name1 == name2, f"Model parameters are not the same: {name1} != {name2}"
         assert param1.dtype == param2.dtype, f"Model parameters are not the same for {name1}: {param1.dtype} != {param2.dtype}"
         assert torch.allclose(param1.data, param2.data), f"Model parameters are not the same for {name1}: {param1.data} != {param2.data}"
     print("Model parameters are the same")
+
+
+def model_grad_norm(model: torch.nn.Module) -> float:
+    """
+    Calculate the gradient norm of the model
+    """
+    # check if all grads are None
+    if all(p.grad is None for p in model.parameters()):
+        return 0.0
+    else:
+        return torch.norm(torch.stack([p.grad.norm() for p in model.parameters() if p.grad is not None]))
 
 
 def generate_batch(model, tokenizer, sample_inputs, num_generations, max_seq_len):
