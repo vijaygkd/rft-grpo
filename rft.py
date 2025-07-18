@@ -1,12 +1,12 @@
 """
 RFT - Reinforcement Fine-Tuning main file
 """
-import copy
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import LoraConfig, get_peft_model, PeftModel
 from datasets import load_dataset
 
-from grpo import get_model_log_prob, grpo_loss
+from grpo import grpo_loss_fn
 from wordle import get_wordle_dataset, get_wordle_rewards
 
 device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
@@ -20,61 +20,140 @@ def train_rft():
     # 1. Load model - Gemma-3-1b-it
     model_name = "google/gemma-3-1b-it"
     print(f"Loading model: {model_name}")
-    model, tokenizer = load_base_model(model_name)
-    ref_model = copy.deepcopy(model)
-    ref_model.eval()
-    ref_model.requires_grad_(False)
+    ref_model, tokenizer = load_base_model(model_name)
+    ref_model.requires_grad_(False)    # no train
     ref_model.to(device)
     print("Ref model info:")
     print_model_info(ref_model)
 
+    model, _ = load_base_model(model_name)
     model = load_lora_model(model)
     model.to(device)
     print("LoRA model info:")
     print_model_info(model)
 
+    prev_model, _ = load_base_model(model_name)
+    prev_model = load_lora_model(prev_model)
+    # copy weights from model to prev_model
+    prev_model = copy_peft_model_weights(model, prev_model)
+    assert_model_same(model, prev_model)
+    prev_model.requires_grad_(False)    # no train
+    prev_model.to(device)
+    print("Prev model info:")
+    print_model_info(prev_model)
+
     # 2. Load dataset - Wordle
-    # TODO - dataloader to shuffle and batch
     dataset = get_wordle_dataset(tokenizer)
-    print(f"Loaded {len(dataset)} examples")
+    print(f"Dataset loaded with {len(dataset)} examples")
 
     # 3. Training Parameters
-    num_epochs = 10
-    num_generations = 2    # number of generations per sample
+    num_epochs = 1
+    num_generations = 4    # number of generations per sample
     # only one sample at a time for now
     num_samples = 1        # number of input samples: batch size = num_samples * num_generations
-    max_seq_len = 128      # max sequence length
+    max_seq_len = 512      # max sequence length
 
     # 4. Training loop
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    # learning rate scheduler
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    # lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
 
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}")
         print("-"*100)
 
+        # shuffle
+        dataset = dataset.shuffle(seed=epoch)
+        dataset = dataset.select(range(5))
+
         for samples in dataset.iter(batch_size=num_samples):
-            # 1. ACTION - Sample generations from model
+            # 1. ACTION - Sample generations from current policy model
             batch_input_ids, batch_output_masks, batch_output_texts = generate_batch(
-                model=model, 
+                model=model,    # TODO: deepseek paper user old policy model for sampling. why?
                 tokenizer=tokenizer, 
                 sample_inputs=samples['input'], 
                 num_generations=num_generations, 
                 max_seq_len=max_seq_len
             )
-
-            print(f"Batch output texts: {batch_output_texts}")
-            print(f"secret: {samples['secret'][0]}")
-
+            
+            print(f"SECRET: {samples['secret'][0]}")
+            for i, text in enumerate(batch_output_texts):
+                print(f"Generation {i}: {text}")
+            
             # 2. REWARD - Calculate rewards
             secret_word = samples['secret'][0]
             batch_rewards = get_wordle_rewards(batch_output_texts, secret_word)
             batch_rewards = torch.tensor(batch_rewards, device=device)
             print(f"Batch rewards: {batch_rewards}")
             
-            
-            # TODO train
-            return
+            # 3. GRPO - Calculate GRPO loss
+            grpo_loss = grpo_loss_fn(
+                curr_model=model, 
+                old_model=prev_model, 
+                ref_model=ref_model, 
+                seq_ids=batch_input_ids, 
+                output_masks=batch_output_masks, 
+                rewards=batch_rewards,
+                pad_token_id=tokenizer.pad_token_id
+            )
+            print(f"GRPO loss: {grpo_loss}")
+            # gradient clipping
+            print(f"Model grad norm before clipping: {model_grad_norm(model)}")
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            print(f"Model grad norm after clipping: {model_grad_norm(model)}")
 
+            # 4. BACKPROP - Update model
+            # update prev model before backprop for next iteration
+            prev_model = copy_peft_model_weights(model, prev_model)
+            assert_model_same(model, prev_model)
+            # update curr model
+            optimizer.zero_grad()
+            grpo_loss.backward()
+            optimizer.step()                # TODO : add gradient accumulation
+            # lr_scheduler.step()
+
+            print("."*30)
+
+            # TODO:
+            # - add logs - print loss, reward, plot graph
+            # - add evaluation on val set
+            # - add checkpointing
+            # - add early stopping
+            # - add learning rate scheduler
+            # - add mixed precision training
+            # - add gradient accumulation
+ 
+
+    return
+
+
+def copy_peft_model_weights(source_peft_model: PeftModel, target_peft_model: PeftModel) -> PeftModel:
+    """
+    Copy source PEFT model weights to target PEFT model
+    """
+    for (name1, param1), (name2, param2) in zip(source_peft_model.named_parameters(), target_peft_model.named_parameters()):
+        assert name1 == name2, "Model parameters are not the same"
+        param2.data.copy_(param1.data)
+    return target_peft_model
+
+
+def assert_model_same(model1, model2):
+    for (name1, param1), (name2, param2) in zip(model1.named_parameters(), model2.named_parameters()):
+        assert name1 == name2, f"Model parameters are not the same: {name1} != {name2}"
+        assert param1.dtype == param2.dtype, f"Model parameters are not the same for {name1}: {param1.dtype} != {param2.dtype}"
+        assert torch.allclose(param1.data, param2.data), f"Model parameters are not the same for {name1}: {param1.data} != {param2.data}"
+    print("Model parameters are the same")
+
+
+def model_grad_norm(model: torch.nn.Module) -> float:
+    """
+    Calculate the gradient norm of the model
+    """
+    # check if all grads are None
+    if all(p.grad is None for p in model.parameters()):
+        return 0.0
+    else:
+        return torch.norm(torch.stack([p.grad.norm() for p in model.parameters() if p.grad is not None]))
 
 
 def generate_batch(model, tokenizer, sample_inputs, num_generations, max_seq_len):
@@ -144,18 +223,19 @@ def print_model_info(model):
 
 
 
-def load_base_model(model_name):
+def load_base_model(model_name) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """
-    Load base model
+    Load base model and tokenizer
     """
     model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", torch_dtype=torch.bfloat16)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
 
 
-def load_lora_model(model):
-    from peft import LoraConfig, get_peft_model
-
+def load_lora_model(model: AutoModelForCausalLM) -> PeftModel:
+    """
+    Initialize LoRA model from base model
+    """
     lora_config = LoraConfig(
         r=8,    # rank of LoRA matrix
         lora_alpha=32,
@@ -167,7 +247,6 @@ def load_lora_model(model):
     )
     # Load LoRA weights
     model = get_peft_model(model, lora_config)
-
     return model
 
 

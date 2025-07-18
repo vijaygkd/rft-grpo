@@ -3,11 +3,12 @@ Wordle dataset and reward function
 """
 
 import torch
+from datasets import Dataset
 
 
 ### DATASET ###
 
-def get_wordle_dataset(tokenizer, split="train"):
+def get_wordle_dataset(tokenizer, split="train") -> Dataset:
     """
     Load wordle dataset from path
     """
