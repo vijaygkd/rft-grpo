@@ -18,18 +18,13 @@ def train_grpo():
     """
     Train GRPO as per DeepSeek-Math / GRPO paper (https://arxiv.org/abs/2402.03300)
     """
-    # 1. Load dataset - Wordle
-    dataset = get_wordle_dataset(tokenizer)
-    print(f"Dataset loaded with {len(dataset)} examples")
-
-    # 2. Load model - Gemma-3-1b-it
+    # 1. Load model - Gemma-3-1b-it
     model_name = "google/gemma-3-1b-it"
     print(f"Init models: {model_name}")
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     ref_model = init_lora_model(model_name).requires_grad_(False).to(device)    # frozen
     old_model = init_lora_model(model_name).requires_grad_(False).to(device)    # frozen
-    curr_model = init_lora_model(model_name).requires_grad_(True).to(device)    # trainable
-    assert_model_same(curr_model, old_model)
+    curr_model = init_lora_model(model_name).to(device)    # trainable
 
     print("Ref model info:")
     print_model_info(ref_model)
@@ -38,12 +33,16 @@ def train_grpo():
     print("Curr model info:")
     print_model_info(curr_model)
 
+    # 2. Load dataset - Wordle
+    dataset = get_wordle_dataset(tokenizer)
+    print(f"Dataset loaded with {len(dataset)} examples")
+
     # 3. Training loop
     num_epochs = 1
     batch_size = 1          # only one sample at a time for now TODO: batching
     num_generations = 4     # number of generations per sample
     num_rl_steps = 4        # number of RL steps per mini-batch
-    max_seq_len = 512       # max sequence length
+    max_seq_len = 128       # max sequence length
 
     optimizer = torch.optim.AdamW(curr_model.parameters(), lr=1e-4)
     # TODO: add learning rate scheduler
@@ -90,8 +89,6 @@ def train_grpo():
             for k in range(num_rl_steps):
                 print("."*30)
                 print(f"RL step {k+1}/{num_rl_steps}")
-                # zero grad
-                optimizer.zero_grad()
                 # Calculate GRPO loss
                 grpo_loss = grpo_loss_fn(
                     curr_model=curr_model, 
@@ -103,12 +100,16 @@ def train_grpo():
                     pad_token_id=tokenizer.pad_token_id
                 )
                 print(f"GRPO loss: {grpo_loss}")
-                # gradient clipping
+
+                # BACKPROP - Update curr model with RL
+                optimizer.zero_grad()
+                grpo_loss.backward()
+
+                # Gradient clipping
                 print(f"Model grad norm before clipping: {model_grad_norm(curr_model)}")
                 torch.nn.utils.clip_grad_norm_(curr_model.parameters(), max_norm=1.0)
                 print(f"Model grad norm after clipping: {model_grad_norm(curr_model)}")
-                # BACKPROP - Update curr model with RL
-                grpo_loss.backward()
+
                 optimizer.step()
                 # TODO: add learning rate scheduler
                 # lr_scheduler.step()    
